@@ -70,44 +70,46 @@ current_directory = os.path.dirname(os.path.abspath(__file__))
 database_file = os.path.join(current_directory, "control_eventos.db")
 
 def sql_connection():
-  try:
-    con = sqlite3.connect(database_file)
-    #print("Connection is established: Database is created in memory")
-    return(con)
-  except Error:
-    print(Error)
+    try:
+        con = sqlite3.connect(database_file)
+        return con
+    except sqlite3.Error as error:
+        print(f"Error al conectar a la base de datos: {error}")
+        return None
 
-def sql_fetch(query):
-  try:
-    #print(query)
-    con = sql_connection()
-    cursor = con.cursor()
-    cursor.execute(query)
-    query = cursor.fetchall()
-    #print("Record fetch successfully")
-    return(query)
-  except sqlite3.Error as error:
-    print("Failed to fetch sqlite table", error)
-  finally:
-    if (con):
-      con.close()
-      #print("The SQLite connection is closed")
+def sql_fetch(query, params=None):
+    con = None
+    try:
+        con = sql_connection()
+        if not con:
+            raise sqlite3.Error("No se pudo establecer la conexión a la base de datos")
+        cursor = con.cursor()
+        cursor.execute(query, params or ())
+        result = cursor.fetchall()
+        cursor.close()
+        return result
+    except sqlite3.Error as error:
+        print(f"Error al ejecutar consulta de lectura: {error}")
+        return []
+    finally:
+        if con:
+            con.close()
 
-def sql_update(query):
-  try:
-    #print(query)
-    con = sql_connection()
-    cursor = con.cursor()
-    cursor.execute(query)
-    con.commit()
-    #print("Record Updated successfully")
-    cursor.close()
-  except sqlite3.Error as error:
-    print("Failed to update sqlite table", error)
-  finally:
-    if (con):
-      con.close()
-      #print("The SQLite connection is closed")
+def sql_update(query, params=None):
+    con = None
+    try:
+        con = sql_connection()
+        if not con:
+            raise sqlite3.Error("No se pudo establecer la conexión a la base de datos")
+        cursor = con.cursor()
+        cursor.execute(query, params or ())
+        con.commit()
+        cursor.close()
+    except sqlite3.Error as error:
+        print(f"Error al ejecutar consulta de actualización: {error}")
+    finally:
+        if con:
+            con.close()
 
 #################################################################################################
 
@@ -536,32 +538,19 @@ async def proceso_cierre_lista(tiempo_espera):
 
 #################################################################################################
 
-async def insert_lista(embed_main_message,embed_reservas_message):
+async def insert_lista(embed_main_message, embed_reservas_message):
     global miembros_lista, MAX_JUGADORES
 
-    embed_main_message_id = 0
-    embed_reservas_message_id = 0
-
-    if embed_main_message:
-        embed_main_message_id = embed_main_message.id
-    if embed_reservas_message:
-        embed_reservas_message_id = embed_reservas_message.id
-
-    # Obtener la fecha actual
+    embed_main_message_id = embed_main_message.id if embed_main_message else 0
+    embed_reservas_message_id = embed_reservas_message.id if embed_reservas_message else 0
     fecha_lista = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    # Convertir miembros_lista a texto
-    datos_lista = str(miembros_lista)  # Convierte el diccionario a string para almacenarlo
-    
-    # Crear la consulta de inserción con los valores ya dentro de la cadena
-    query = f'''
-    INSERT INTO Listas (FechaLista, DatosLista, NumJugadores, EmbedID, EmbedReservasID)
-    VALUES ("{fecha_lista}", "{datos_lista}", {MAX_JUGADORES}, {embed_main_message_id}, {embed_reservas_message_id});
-    '''
-    
-    #print(query) 
-    sql_update(query)
+    datos_lista = str(miembros_lista)
 
+    query = '''
+    INSERT INTO Listas (FechaLista, DatosLista, NumJugadores, EmbedID, EmbedReservasID)
+    VALUES (?, ?, ?, ?, ?)
+    '''
+    sql_update(query, (fecha_lista, datos_lista, MAX_JUGADORES, embed_main_message_id, embed_reservas_message_id))
     print(f"Lista guardada en la base de datos: {fecha_lista}")
 
 #################################################################################################
