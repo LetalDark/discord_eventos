@@ -61,6 +61,7 @@ lista_cerrada = True
 tarea_cerrar_lista = None
 tiempo_inicio_lista = None
 send_messages = os.getenv("SEND_MESSAGES", "true").lower() == "true"
+adding_players = set()
 
 #################################################################################################
 
@@ -537,7 +538,7 @@ async def insert_lista(embed_main_message, embed_reservas_message):
     embed_main_message_id = embed_main_message.id if embed_main_message else 0
     embed_reservas_message_id = embed_reservas_message.id if embed_reservas_message else 0
     fecha_lista = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    datos_lista = str(miembros_lista)
+    datos_lista = json.dumps(miembros_lista)
 
     query = '''
     INSERT INTO Listas (FechaLista, DatosLista, NumJugadores, EmbedID, EmbedReservasID)
@@ -617,7 +618,8 @@ async def actualizar_jugadores_db():
 @bot.command()
 async def UpdateStatsPlayers(ctx):
     query_total_partidas = "SELECT seq FROM sqlite_sequence WHERE name='Listas';"
-    total_partidas = sql_fetch(query_total_partidas)[0][0]  # Extraer el valor directamente de la tupla
+    total_partidas = sql_fetch(query_total_partidas)
+    total_partidas = total_partidas[0][0] if total_partidas else 0
     query = "SELECT Apodo, PartidasInscrito, PartidasConectado, PartidasDesconectado, PorcentajeInscrito, PorcentajeAusencias, UltimaPartida FROM Jugadores"
     jugadores = sql_fetch(query)
     
@@ -751,21 +753,30 @@ async def borrar_mensajes_sin_embed():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    global embed_main_message, embed_reservas_message, miembros_lista
-
+    global embed_main_message, embed_reservas_message, miembros_lista, adding_players
     if lista_cerrada:
-        return  # No actualizar si la lista está cerrada
+        return
 
+    # Caso 1: Añadir automáticamente un miembro que se conecta al canal de reservas
     if member.display_name not in miembros_lista and after.channel and after.channel.id == VOICE_CHR_ID:
-        modo = "automatico"  # O "manual" dependiendo del contexto
-        ctx = bot.get_channel(int(config['channel_default']))
-        await add_players(ctx, member, modo)  # Llamada con el modo
+        if member.display_name not in adding_players:
+            adding_players.add(member.display_name)
+            modo = "automatico"
+            ctx = bot.get_channel(int(config['channel_default']))
+            await add_players(ctx, member, modo)
+            adding_players.remove(member.display_name)
 
+    # Caso 2: Actualizar el estado de un miembro ya en la lista cuando se conecta o desconecta
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
+            # El miembro se conectó a un canal de voz
             miembros_lista[member.display_name] = "sí"
+            print(f"{member.display_name} se ha conectado. Estado actualizado a 'sí'.")
         elif before.channel is not None and after.channel is None:
+            # El miembro se desconectó de un canal de voz
             miembros_lista[member.display_name] = "no"
+            print(f"{member.display_name} se ha desconectado. Estado actualizado a 'no'.")
+        # Actualizar los embeds si existen
         if embed_main_message or embed_reservas_message:
             await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
 
