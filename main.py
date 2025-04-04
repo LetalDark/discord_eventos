@@ -108,7 +108,7 @@ def sql_update(query, params=None):
     except sqlite3.Error as error:
         print(f"Error al ejecutar consulta de actualización: {error}")
     finally:
-        if con:
+        if con is not None:  # Añadir esta verificación
             con.close()
 
 #################################################################################################
@@ -452,6 +452,9 @@ async def CancelList(ctx):
     except discord.NotFound:
         await ctx.send("⚠️ No se encontró el mensaje del embed, pero se reiniciará la lista igualmente.")
     
+    miembros_lista.clear()
+    miembros_objetos.clear()
+    lista_cerrada = True
     await ctx.send("✅ La lista ha sido cancelada correctamente.")
 
 #################################################################################################
@@ -572,52 +575,50 @@ async def actualizar_jugadores_db():
         user_discord = member_obj.name
         apodo = member_obj.global_name
 
-        query = f"SELECT * FROM Jugadores WHERE IdDiscord = {member_obj.id};"
-        existing_player = sql_fetch(query)
+        query = "SELECT * FROM Jugadores WHERE IdDiscord = ?;"
+        existing_player = sql_fetch(query, (member_obj.id,))
 
         if existing_player:
             partidas_inscrito = existing_player[0][3] + 1
             partidas_conectado = existing_player[0][4] + 1 if estado == "sí" else existing_player[0][4]
             partidas_desconectado = existing_player[0][5] + 1 if estado == "no" else existing_player[0][5]
-            # Si el jugador ha jugado, actualizamos la fecha, de lo contrario mantenemos el valor anterior
             ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "sí" else (existing_player[0][8] if existing_player[0][8] else "Nunca ha jugado")
+            query_update = '''
+                UPDATE Jugadores
+                SET PartidasInscrito = ?,
+                    PartidasConectado = ?,
+                    PartidasDesconectado = ?,
+                    UltimaPartida = ?
+                WHERE IdDiscord = ?;
+            '''
+            sql_update(query_update, (partidas_inscrito, partidas_conectado, partidas_desconectado, ultima_partida, member_obj.id))
         else:
             partidas_inscrito = 1
             partidas_conectado = 1 if estado == "sí" else 0
             partidas_desconectado = 1 if estado == "no" else 0
             ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "sí" else "Nunca ha jugado"
-
-        if existing_player:
-            query_update = f'''
-                UPDATE Jugadores
-                SET PartidasInscrito = {partidas_inscrito},
-                    PartidasConectado = {partidas_conectado},
-                    PartidasDesconectado = {partidas_desconectado},
-                    UltimaPartida = "{ultima_partida}"
-                WHERE IdDiscord = {member_obj.id};
-            '''
-        else:
-            query_update = f'''
+            query_update = '''
                 INSERT INTO Jugadores (IdDiscord, UserDiscord, Apodo, PartidasInscrito, PartidasConectado, PartidasDesconectado, UltimaPartida)
-                VALUES ({member_obj.id}, "{user_discord}", "{apodo}", {partidas_inscrito}, {partidas_conectado}, {partidas_desconectado}, "{ultima_partida}");
+                VALUES (?, ?, ?, ?, ?, ?, ?);
             '''
-        #print(query_update)
-        sql_update(query_update)
+            sql_update(query_update, (member_obj.id, user_discord, apodo, partidas_inscrito, partidas_conectado, partidas_desconectado, ultima_partida))
 
-
-    # Ahora actualizar todos los jugadores para asegurar que el PorcentajeInscrito es correcto
+    # Actualizar porcentajes
     query_all_players = "SELECT IdDiscord, PartidasInscrito FROM Jugadores;"
     all_players = sql_fetch(query_all_players)
     for player_id, partidas_inscrito in all_players:
+        query_desconectado = "SELECT PartidasDesconectado FROM Jugadores WHERE IdDiscord = ?;"
+        desconectados = sql_fetch(query_desconectado, (player_id,))
+        partidas_desconectado = desconectados[0][0] if desconectados else 0
         porcentaje_inscrito = round((partidas_inscrito / total_partidas) * 100, 2) if total_partidas > 0 else 0
-        porcentaje_ausencias = round(((sql_fetch(f"SELECT PartidasDesconectado FROM Jugadores WHERE IdDiscord = {player_id};")[0][0]) / partidas_inscrito) * 100, 2) if partidas_inscrito > 0 else 0
-        query_update_percentage = f'''
+        porcentaje_ausencias = round((partidas_desconectado / partidas_inscrito) * 100, 2) if partidas_inscrito > 0 else 0
+        query_update_percentage = '''
             UPDATE Jugadores
-            SET PorcentajeInscrito = {porcentaje_inscrito},
-                PorcentajeAusencias = {porcentaje_ausencias}
-            WHERE IdDiscord = {player_id};
+            SET PorcentajeInscrito = ?,
+                PorcentajeAusencias = ?
+            WHERE IdDiscord = ?;
         '''
-        sql_update(query_update_percentage)
+        sql_update(query_update_percentage, (porcentaje_inscrito, porcentaje_ausencias, player_id))
 
     print("✅ Los jugadores han sido actualizados en la base de datos.")
 
@@ -773,11 +774,8 @@ async def on_voice_state_update(member, before, after):
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
             miembros_lista[member.display_name] = "sí"
-            #print(miembros_lista)  # Se imprime cada vez que se modifica la lista
         elif before.channel is not None and after.channel is None:
             miembros_lista[member.display_name] = "no"
-            #print(miembros_lista)  # Se imprime cada vez que se modifica la lista
-
         if embed_main_message or embed_reservas_message:
             await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
 
@@ -790,7 +788,7 @@ async def comprobar_conectados_periodicamente():
         await asyncio.sleep(60)  # Espera 60 segundos
 
         if lista_cerrada:
-            return  # No actualizar si la lista está cerrada
+            continue  # Saltar iteración si la lista está cerrada
 
         # Obtener miembros conectados
         connected_members = {member.display_name for guild in bot.guilds for channel in guild.voice_channels for member in channel.members}
