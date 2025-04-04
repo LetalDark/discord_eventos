@@ -148,19 +148,18 @@ async def on_message(message):
 
 #################################################################################################
 
-async def eliminar_jugadores_no_en_lista(ctx):
+async def eliminar_jugadores_no_en_lista(channel_or_ctx):
     global miembros_lista, miembros_objetos
 
-    miembros_objetos = {member.display_name: member for member in ctx.guild.members if ROL_ID_JUGADORES in [role.id for role in member.roles]}
+    # Obtener el guild dependiendo del tipo de entrada
+    guild = channel_or_ctx.guild if hasattr(channel_or_ctx, 'guild') else channel_or_ctx
+    miembros_objetos = {member.display_name: member for member in guild.members if ROL_ID_JUGADORES in [role.id for role in member.roles]}
 
-    # Creamos una lista con los jugadores que están en miembros_lista
     jugadores_en_lista = set(miembros_lista.keys())
-
-    # Iteramos sobre los miembros de miembros_objetos y eliminamos los que no están en miembros_lista
     jugadores_a_eliminar = [jugador for jugador in miembros_objetos if jugador not in jugadores_en_lista]
 
     for jugador in jugadores_a_eliminar:
-        del miembros_objetos[jugador]  # Elimina el jugador de miembros_objetos
+        del miembros_objetos[jugador]
 
 #################################################################################################
 
@@ -236,21 +235,23 @@ async def NewList(ctx):
 
 #################################################################################################
 
-async def actualizar_embeds(ctx):
+async def actualizar_embeds(channel_or_ctx):
     global embed_main_message, embed_reservas_message
     
+    # Determinar el canal para enviar mensajes
+    channel = channel_or_ctx if isinstance(channel_or_ctx, discord.TextChannel) else channel_or_ctx.channel
     embed_main, embed_reservas = generar_embeds()
     
     if embed_main_message:
         await embed_main_message.edit(embed=embed_main)
     else:
-        embed_main_message = await ctx.send(embed=embed_main)
+        embed_main_message = await channel.send(embed=embed_main)
     
     if embed_reservas:
         if embed_reservas_message:
             await embed_reservas_message.edit(embed=embed_reservas)
         else:
-            embed_reservas_message = await ctx.send(embed=embed_reservas)
+            embed_reservas_message = await channel.send(embed=embed_reservas)
 
 #################################################################################################
 
@@ -355,24 +356,29 @@ async def enviar_mensajes_privados(ctx):
 #################################################################################################
 
 @bot.command(name="AddPlayers")
-async def add_players(ctx, modo="manual"):
-
+async def add_players(ctx, member=None, modo="manual"):
     global miembros_lista, miembros_objetos
 
+    # Determinar si ctx es un canal o un contexto de comando
+    channel = ctx if isinstance(ctx, discord.TextChannel) else ctx.channel if ctx else bot.get_channel(int(config['channel_default']))
+
     # Obtener los miembros conectados a los canales de voz en ese momento
-    connected_members = {member.display_name: member for guild in bot.guilds for channel in guild.voice_channels for member in channel.members}
-    #print(f"Miembros conectados en voz: {connected_members}")  # Imprime los miembros conectados al inicio
+    connected_members = {m.display_name: m for guild in bot.guilds for channel in guild.voice_channels for m in channel.members}
 
     if modo == "automatico":
-        miembro = ctx
-        ctx = bot.get_channel(int(config['channel_default']))
-        miembros_lista[miembro] = "sí"  # Añadir el jugador con estado "sí"
-        num_miembros_objetos = len(miembros_objetos)
-        miembros_objetos[num_miembros_objetos] = connected_members[miembro]
-        print(f"Se ha añadido correctamente el jugador: {miembro}")
+        if member is None:
+            print("Error: Modo automático requiere un miembro.")
+            return
+        miembro = member.display_name
+        if miembro not in miembros_lista:  # Evitar duplicados
+            miembros_lista[miembro] = "sí"
+            miembros_objetos[miembro] = connected_members[miembro]  # Usar nombre como clave
+            print(f"Se ha añadido correctamente el jugador: {miembro}")
 
-    if modo == "manual":
-        # Si la lista está vacía, no hay lista activa
+    elif modo == "manual":
+        if not isinstance(ctx, commands.Context):
+            print("Error: Modo manual requiere un contexto de comando.")
+            return
         if not miembros_lista:
             await ctx.send(":red_circle: No hay una lista activa para agregar jugadores.")
             return
@@ -392,31 +398,24 @@ async def add_players(ctx, modo="manual"):
             if msg.content.strip().upper() == "FIN":
                 break
 
-            # Dividir el mensaje por saltos de línea
             jugadores = msg.content.strip().splitlines()
-
             for jugador in jugadores:
-                jugador = jugador.strip()  # Eliminar espacios al principio y al final
-                if jugador:  # Verificar que no esté vacío
-                    # Verificamos si el jugador ya está en la lista, si no lo está, lo añadimos
+                jugador = jugador.strip()
+                if jugador:
                     if jugador in miembros_lista:
                         await ctx.send(f"⚠️ `{jugador}` ya está en la lista.")
                     else:
-                        # Verificar si el miembro está conectado en algún canal de voz
                         if jugador in connected_members:
-                            miembros_lista[jugador] = "sí"  # Si está conectado, se marca como 'sí'
-                            miembros_objetos[jugador] = connected_members[jugador]  # Guardar el objeto del miembro
+                            miembros_lista[jugador] = "sí"
+                            miembros_objetos[jugador] = connected_members[jugador]
                             print(f"Se ha añadido correctamente el jugador: {jugador}")
                         else:
-                            miembros_lista[jugador] = "no"  # Si no está conectado, se marca como 'no'         
-                        # Ahora se actualizarán los objetos y estados correctamente
-            
-            # Borrar el mensaje del usuario para mantener limpio el canal
+                            miembros_lista[jugador] = "no"
             await msg.delete()
 
-    await eliminar_jugadores_no_en_lista(ctx)
-    await actualizar_embeds(ctx)  # Actualizamos el embed con los nuevos jugadores
-
+    await eliminar_jugadores_no_en_lista(channel)
+    await actualizar_embeds(channel)
+    
 #################################################################################################
 
 @bot.command()
@@ -495,7 +494,8 @@ async def cerrar_lista(tiempo_espera):
 
     # Cancelar la tarea anterior si existe
     if tarea_cerrar_lista is not None and not tarea_cerrar_lista.done():
-        tarea_cerrar_lista.cancel()  # Cancelamos la tarea en ejecución anterior
+        tarea_cerrar_lista.cancel()
+        await tarea_cerrar_lista  # Esperar a que termine
 
     # Crear una nueva tarea asíncrona para cerrar la lista con el tiempo de espera especificado
     tarea_cerrar_lista = asyncio.create_task(proceso_cierre_lista(tiempo_espera))
@@ -558,9 +558,8 @@ async def insert_lista(embed_main_message,embed_reservas_message):
     INSERT INTO Listas (FechaLista, DatosLista, NumJugadores, EmbedID, EmbedReservasID)
     VALUES ("{fecha_lista}", "{datos_lista}", {MAX_JUGADORES}, {embed_main_message_id}, {embed_reservas_message_id});
     '''
-    print(query)
     
-    # Usar la función sql_update para insertar la consulta en la base de datos
+    #print(query) 
     sql_update(query)
 
     print(f"Lista guardada en la base de datos: {fecha_lista}")
@@ -613,6 +612,7 @@ async def actualizar_jugadores_db():
                 INSERT INTO Jugadores (IdDiscord, UserDiscord, Apodo, PartidasInscrito, PartidasConectado, PartidasDesconectado, UltimaPartida)
                 VALUES ({member_obj.id}, "{user_discord}", "{apodo}", {partidas_inscrito}, {partidas_conectado}, {partidas_desconectado}, "{ultima_partida}");
             '''
+        #print(query_update)
         sql_update(query_update)
 
 
@@ -778,7 +778,8 @@ async def on_voice_state_update(member, before, after):
 
     if member.display_name not in miembros_lista and after.channel and after.channel.id == VOICE_CHR_ID:
         modo = "automatico"  # O "manual" dependiendo del contexto
-        await add_players(member.display_name, modo)  # Llamada con el modo
+        ctx = bot.get_channel(int(config['channel_default']))
+        await add_players(ctx, member, modo)  # Llamada con el modo
 
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
