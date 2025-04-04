@@ -167,7 +167,7 @@ async def eliminar_jugadores_no_en_lista(channel_or_ctx):
 
 @bot.command()
 async def NewList(ctx):
-    global miembros_lista, miembros_objetos, embed_main_message, embed_reservas_message, lista_cerrada, tiempo_inicio_lista, send_messages
+    global miembros_lista, miembros_objetos, embed_main_message, embed_reservas_message, lista_cerrada, tiempo_inicio_lista, tarea_cerrar_lista, send_messages
 
     miembros_lista = {}
     miembros_objetos = {}
@@ -175,23 +175,21 @@ async def NewList(ctx):
     embed_reservas_message = None
     lista_cerrada = False
     tiempo_inicio_lista = time.time()
+    tarea_cerrar_lista = None  # Reiniciar tarea_cerrar_lista aquí
     
     await ctx.send("✍ Introduce los elementos de la lista. Escribe `FIN` para terminar.")
-    bot.loop.create_task(cerrar_lista(MAX_TIME_LIST))
+    bot.loop.create_task(cerrar_lista(MAX_TIME_LIST))  # Esto asignará tarea_cerrar_lista
 
-    # Obtener los miembros conectados a los canales de voz en ese momento
     connected_members = {member.display_name: member for guild in bot.guilds for channel in guild.voice_channels for member in channel.members}
-    print(f"Miembros conectados en voz: {connected_members}")  # Imprime los miembros conectados al inicio
+    print(f"Miembros conectados en voz: {connected_members}")
 
     while True:
         try:
             msg = await bot.wait_for('message', check=lambda m: m.author == ctx.author, timeout=60)
             if msg.content.strip().upper() == "FIN":
                 break
-
             nuevos_miembros = set()
             lista_temporal = {}
-
             for miembro in msg.content.splitlines():
                 miembro = miembro.strip()
                 if miembro:
@@ -199,41 +197,31 @@ async def NewList(ctx):
                         await ctx.send(f"⚠️ `{miembro}` ya está en la lista. Envía la lista nuevamente sin duplicados.")
                         break
                     nuevos_miembros.add(miembro)
-                    
-                    # Verificar si el miembro está conectado en algún canal de voz
                     if miembro in connected_members:
                         lista_temporal[miembro] = "sí"
-                        miembros_objetos[miembro] = connected_members[miembro]  # Guardar el objeto del miembro
+                        miembros_objetos[miembro] = connected_members[miembro]
                         print(f"Se ha añadido correctamente el jugador: {miembro}")
                     else:
                         lista_temporal[miembro] = "no"
             else:
-                # Solo actualizamos la lista si no hay duplicados
                 miembros_lista.update(lista_temporal)
-                
-                # Borrar el mensaje del usuario para mantener limpio el canal
                 await msg.delete()
-
                 continue
-
         except asyncio.TimeoutError:
             await ctx.send("⏳ Tiempo de espera agotado. Operación cancelada.")
             return
 
-    # Verificar si se ha introducido al menos un miembro
     if not miembros_lista:
         await ctx.send("⚠️ No has introducido ningún miembro. Por favor, vuelve a intentarlo con `/NewList`.")
         return
 
     await eliminar_jugadores_no_en_lista(ctx)
     print(f"miembros_objetos con ROL: `{miembros_objetos}`")
-    
     await actualizar_embeds(ctx)
-    if send_messages:  # Verifica si está habilitado el envío de mensajes
+    if send_messages:
         await enviar_mensajes_privados(ctx)
     else:
         print("Los mensajes privados están desactivados.")
-
 
 #################################################################################################
 
@@ -461,31 +449,26 @@ async def CancelList(ctx):
 
 @bot.command()
 async def FinishList(ctx):
-    global MAX_TIME_LIST
+    global MAX_TIME_LIST, tarea_cerrar_lista
 
-    # Verificar si la lista ya está cerrada
     if lista_cerrada:
         await ctx.send("No hay ninguna lista que cerrar.")
-        return  # No continuar si la lista ya está cerrada
+        return
 
-    # Pedir confirmación con la palabra "CONFIRMAR"
     await ctx.send("¿Estás seguro de que quieres cerrar la lista? Escribe `CONFIRMAR` para proceder.")
     
-    # Esperar la respuesta del usuario
     def check(message):
         return message.author == ctx.author and message.content.upper() == "CONFIRMAR"
     
     try:
-        # Esperamos la respuesta durante 30 segundos (puedes ajustar este tiempo)
-        response = await bot.wait_for('message', check=check, timeout=30.0)
+        await bot.wait_for('message', check=check, timeout=30.0)
     except asyncio.TimeoutError:
-        # Si no se recibe la respuesta a tiempo, salimos de la función
         await ctx.send("No se recibió confirmación a tiempo. La operación ha sido cancelada.")
         return
     
-    await cerrar_lista(1)  # Pasamos 1 segundo como argumento para cerrar la lista rápidamente
-
-    # Restaurar el valor original de MAX_TIME_LIST después de que la lista se haya cerrado
+    print("Estado antes de cerrar_lista:", "tarea_cerrar_lista =", tarea_cerrar_lista, "lista_cerrada =", lista_cerrada)
+    await cerrar_lista(1)
+    print("Estado después de cerrar_lista:", "tarea_cerrar_lista =", tarea_cerrar_lista, "lista_cerrada =", lista_cerrada)
     MAX_TIME_LIST = int(os.environ['MAX_TIME'])
 
 #################################################################################################
@@ -493,30 +476,39 @@ async def FinishList(ctx):
 async def cerrar_lista(tiempo_espera):
     global lista_cerrada, tarea_cerrar_lista
     
-    # Verificar si la lista ya está cerrada
+    print("Iniciando cerrar_lista")
     if lista_cerrada:
-        return  # No hacer nada si la lista ya está cerrada
-
-    # Cancelar la tarea anterior si existe
-    if tarea_cerrar_lista is not None and not tarea_cerrar_lista.done():
-        tarea_cerrar_lista.cancel()
-        await tarea_cerrar_lista  # Esperar a que termine
-
-    # Crear una nueva tarea asíncrona para cerrar la lista con el tiempo de espera especificado
+        print("Lista ya cerrada, saliendo")
+        return
+    
+    if tarea_cerrar_lista is not None:
+        if not tarea_cerrar_lista.done():
+            print("Cancelando tarea anterior")
+            tarea_cerrar_lista.cancel()
+            try:
+                await tarea_cerrar_lista  # Intentar esperar a que termine
+            except asyncio.CancelledError:
+                print("Tarea anterior cancelada exitosamente")
+        else:
+            print("Tarea anterior ya estaba terminada")
+        tarea_cerrar_lista = None  # Limpiar la tarea después de cancelarla
+    
+    print("Creando nueva tarea de cierre")
     tarea_cerrar_lista = asyncio.create_task(proceso_cierre_lista(tiempo_espera))
+    await tarea_cerrar_lista
+    print("Cierre completado")
 
 #################################################################################################
 
 async def proceso_cierre_lista(tiempo_espera):
     global lista_cerrada, embed_main_message, embed_reservas_message
     
-    await asyncio.sleep(tiempo_espera)  # Esperar el tiempo especificado (en segundos)
-
-    # Obtener el canal y los embeds
-    channel = bot.get_channel(int(config['channel_default']))
-    embed_main, embed_reservas = generar_embeds()  # Generamos los embeds sin 'await'
+    print(f"Esperando {tiempo_espera} segundos en proceso_cierre_lista")
+    await asyncio.sleep(tiempo_espera)
     
-    # Actualizar el pie de página antes de cerrar la lista
+    channel = bot.get_channel(int(config['channel_default']))
+    embed_main, embed_reservas = generar_embeds()
+    
     if embed_main:
         embed_main.set_footer(text=f"⛔ Lista Cerrada\n{embed_main.footer.text.split('\n')[1]}\n🟢 Conectados: {sum(1 for estado in miembros_lista.values() if estado == 'sí')} | 🔴 Desconectados: {sum(1 for estado in miembros_lista.values() if estado == 'no')}")
         if embed_main_message:
@@ -530,13 +522,11 @@ async def proceso_cierre_lista(tiempo_espera):
         else:
             embed_reservas_message = await channel.send(embed=embed_reservas)
     
-    await insert_lista(embed_main_message,embed_reservas_message)
+    await insert_lista(embed_main_message, embed_reservas_message)
     await actualizar_jugadores_db()
     await UpdateStatsPlayers(None)
-
-    lista_cerrada = True
     
-    # Enviar mensaje al canal cuando la lista se cierre
+    lista_cerrada = True
     await channel.send("⛔ La lista se ha cerrado. Ya no se pueden hacer cambios.")
 
 #################################################################################################
