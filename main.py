@@ -62,6 +62,7 @@ tarea_cerrar_lista = None
 tiempo_inicio_lista = None
 send_messages = os.getenv("SEND_MESSAGES", "true").lower() == "true"
 adding_players = set()
+adding_lock = asyncio.Lock()
 
 #################################################################################################
 
@@ -411,35 +412,40 @@ async def add_players(ctx, member=None, modo="manual"):
 
 @bot.command()
 async def CancelList(ctx):
-    global miembros_lista, miembros_objetos, embed_main_message, embed_reservas_message, lista_cerrada
+    global miembros_lista, miembros_objetos, embed_main_message, embed_reservas_message, lista_cerrada, tarea_cerrar_lista
     
-    # Verificar si la lista está cerrada
     if lista_cerrada:
         await ctx.send("⚠️ No puedes cancelar la lista porque aún no está abierta.")
         return
     
-    # Preguntar por confirmación
     await ctx.send("❗ ¿Estás seguro de que quieres cancelar la lista? Responde 'CONFIRMAR' para proceder.")
     
     def check(m):
         return m.author == ctx.author and m.content.upper() == "CONFIRMAR"
     
     try:
-        confirmation = await bot.wait_for("message", check=check, timeout=30)
-    except:
+        await bot.wait_for("message", check=check, timeout=30)
+    except asyncio.TimeoutError:
         await ctx.send("⚠️ Cancelación abortada. No se recibió confirmación a tiempo.")
         return
     
-    # Borrar el último embed si existen
     try:
         if embed_reservas_message:
             await embed_reservas_message.delete()
             embed_reservas_message = None
-        elif embed_main_message:
+        if embed_main_message:  # Cambié elif por if para asegurar que ambos se borren si existen
             await embed_main_message.delete()
             embed_main_message = None
     except discord.NotFound:
         await ctx.send("⚠️ No se encontró el mensaje del embed, pero se reiniciará la lista igualmente.")
+    
+    if tarea_cerrar_lista and not tarea_cerrar_lista.done():
+        tarea_cerrar_lista.cancel()
+        try:
+            await tarea_cerrar_lista
+        except asyncio.CancelledError:
+            print("Tarea de cierre automático cancelada en CancelList")
+    tarea_cerrar_lista = None
     
     miembros_lista.clear()
     miembros_objetos.clear()
@@ -753,30 +759,26 @@ async def borrar_mensajes_sin_embed():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    global embed_main_message, embed_reservas_message, miembros_lista, adding_players
+    global embed_main_message, embed_reservas_message, miembros_lista, adding_players, adding_lock
     if lista_cerrada:
         return
 
-    # Caso 1: Añadir automáticamente un miembro que se conecta al canal de reservas
     if member.display_name not in miembros_lista and after.channel and after.channel.id == VOICE_CHR_ID:
-        if member.display_name not in adding_players:
-            adding_players.add(member.display_name)
-            modo = "automatico"
-            ctx = bot.get_channel(int(config['channel_default']))
-            await add_players(ctx, member, modo)
-            adding_players.remove(member.display_name)
+        async with adding_lock:
+            if member.display_name not in adding_players:
+                adding_players.add(member.display_name)
+                modo = "automatico"
+                ctx = bot.get_channel(int(config['channel_default']))
+                await add_players(ctx, member, modo)
+                adding_players.remove(member.display_name)
 
-    # Caso 2: Actualizar el estado de un miembro ya en la lista cuando se conecta o desconecta
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
-            # El miembro se conectó a un canal de voz
             miembros_lista[member.display_name] = "sí"
             print(f"{member.display_name} se ha conectado. Estado actualizado a 'sí'.")
         elif before.channel is not None and after.channel is None:
-            # El miembro se desconectó de un canal de voz
             miembros_lista[member.display_name] = "no"
             print(f"{member.display_name} se ha desconectado. Estado actualizado a 'no'.")
-        # Actualizar los embeds si existen
         if embed_main_message or embed_reservas_message:
             await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
 
