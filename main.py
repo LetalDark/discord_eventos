@@ -63,6 +63,8 @@ tiempo_inicio_lista = None
 send_messages = os.getenv("SEND_MESSAGES", "true").lower() == "true"
 adding_players = set()
 adding_lock = asyncio.Lock()
+ultima_actualizacion_embed = 0  # Timestamp de la última actualización del embed
+embed_update_lock = asyncio.Lock()  # Bloqueo para controlar actualizaciones del embed
 
 #################################################################################################
 
@@ -759,10 +761,11 @@ async def borrar_mensajes_sin_embed():
 
 @bot.event
 async def on_voice_state_update(member, before, after):
-    global embed_main_message, embed_reservas_message, miembros_lista, adding_players, adding_lock
+    global embed_main_message, embed_reservas_message, miembros_lista, adding_players, adding_lock, ultima_actualizacion_embed, embed_update_lock
     if lista_cerrada:
         return
 
+    # Caso 1: Añadir automáticamente desde el canal de reservas
     if member.display_name not in miembros_lista and after.channel and after.channel.id == VOICE_CHR_ID:
         async with adding_lock:
             if member.display_name not in adding_players:
@@ -772,6 +775,7 @@ async def on_voice_state_update(member, before, after):
                 await add_players(ctx, member, modo)
                 adding_players.remove(member.display_name)
 
+    # Caso 2: Actualizar estado de miembros en la lista
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
             miembros_lista[member.display_name] = "sí"
@@ -779,8 +783,14 @@ async def on_voice_state_update(member, before, after):
         elif before.channel is not None and after.channel is None:
             miembros_lista[member.display_name] = "no"
             print(f"{member.display_name} se ha desconectado. Estado actualizado a 'no'.")
+
+        # Limitar la actualización del embed a una vez cada 2 segundos
         if embed_main_message or embed_reservas_message:
-            await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
+            async with embed_update_lock:
+                tiempo_actual = time.time()
+                if tiempo_actual - ultima_actualizacion_embed >= 2:  # 2 segundos de intervalo mínimo
+                    await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
+                    ultima_actualizacion_embed = tiempo_actual
 
 #################################################################################################
 
