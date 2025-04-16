@@ -234,7 +234,13 @@ async def actualizar_embeds(channel_or_ctx):
     global embed_main_message, embed_reservas_message
     
     # Determinar el canal para enviar mensajes
-    channel = channel_or_ctx if isinstance(channel_or_ctx, discord.TextChannel) else channel_or_ctx.channel
+    if isinstance(channel_or_ctx, discord.TextChannel):
+        channel = channel_or_ctx
+    elif isinstance(channel_or_ctx, discord.Thread):
+        channel = channel_or_ctx.parent  # Obtener el canal padre del hilo
+    else:
+        channel = channel_or_ctx.channel  # Para contextos de comandos (commands.Context)
+    
     embed_main, embed_reservas = generar_embeds()
     
     if embed_main_message:
