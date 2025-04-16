@@ -1,26 +1,26 @@
 import discord
+from discord.ext import commands
+from discord import app_commands
+import json
+import re
+import logging
+from datetime import datetime
 import os
 import sys
 import dotenv
-import logging
+from dotenv import load_dotenv
 import asyncio
 import time
-import datetime
 import sqlite3
-import json
-
-from discord.ext import commands
-from discord import app_commands
-from dotenv import load_dotenv
-from datetime import datetime
 from sqlite3 import Error
 
-logging.basicConfig(level=logging.INFO)
+# Configuración de logging
+logging.basicConfig(level=logging.DEBUG, filename='bot.log', filemode='a', format='%(asctime)s - %(levelname)s - %(message)s')
 load_dotenv()
 
 # Lista de claves requeridas
 required_keys = [
-    "DISCORD_TOKEN", "APPLICATION_ID", "CHANNEL_DEFAULT", "CHANNEL_ADMIN", "ROL_JUGADORES",
+    "DISCORD_TOKEN", "APPLICATION_ID", "CHANNEL_DEFAULT", "CHANNEL_ADMIN", "THREAD_STATS_NAME", "ROL_JUGADORES",
     "ROL_ADMINS", "VOICE_CHANNEL_ID","VOICE_CHANNEL_RESERVAS_ID", "MAX_PLAYERS", "MAX_TIME", "SEND_MESSAGES"
 ]
 # Verificar que todas las claves existen y tienen valor
@@ -53,6 +53,7 @@ VOICE_CHR_ID = int(os.environ['VOICE_CHANNEL_RESERVAS_ID'])
 MAX_JUGADORES = int(os.environ['MAX_PLAYERS'])
 MAX_JUGADORES_LISTAS = MAX_JUGADORES * 2
 MAX_TIME_LIST = int(os.environ['MAX_TIME'])
+THREAD_STATS_NAME = os.environ['THREAD_STATS_NAME']
 miembros_lista = {}
 miembros_objetos = {}
 embed_main_message = None
@@ -202,7 +203,7 @@ async def NewList(ctx):
                         break
                     nuevos_miembros.add(miembro)
                     if miembro in connected_members:
-                        lista_temporal[miembro] = "sí"
+                        lista_temporal[miembro] = "si"
                         miembros_objetos[miembro] = connected_members[miembro]
                         print(f"Se ha añadido correctamente el jugador: {miembro}")
                     else:
@@ -249,59 +250,85 @@ async def actualizar_embeds(channel_or_ctx):
 
 #################################################################################################
 
-def generar_embeds():
-    global miembros_lista, MAX_TIME_LIST, tiempo_inicio_lista
-    
-    if tiempo_inicio_lista is None:
-        # Si no se ha registrado el tiempo de inicio, no hacer nada
-        return None
+def generar_embeds(miembros_lista=None, max_jugadores=None, fecha_lista=None, is_historico=False):
+    """
+    Genera embeds para listas de jugadores, tanto en tiempo real como historicas.
+    Usa 'si' y 'no' para estados de conexion.
 
-    # Calcular el tiempo transcurrido desde que se inició la lista
-    tiempo_transcurrido = time.time() - tiempo_inicio_lista
+    Args:
+        miembros_lista (dict, optional): Diccionario con jugadores y estados.
+        max_jugadores (int, optional): Numero maximo de jugadores principales.
+        fecha_lista (str, optional): Fecha de la lista (YYYY-MM-DD HH:MM:SS).
+        is_historico (bool): Si True, muestra lista cerrada sin tiempo restante.
 
-    # Calcular el tiempo restante en segundos
-    tiempo_restante = MAX_TIME_LIST - tiempo_transcurrido
-    
-    if tiempo_restante < 0:
-        tiempo_restante = 0  # No puede ser negativo
+    Returns:
+        tuple: (embed_main, embed_reservas) o (embed_main, None).
+    """
+    global MAX_JUGADORES, MAX_TIME_LIST, tiempo_inicio_lista
 
-    # Calcular minutos y segundos restantes
-    minutos_restantes = int(tiempo_restante) // 60
-    segundos_restantes = int(tiempo_restante) % 60
+    # Usar valores globales si no se proporcionan
+    miembros_lista = miembros_lista or globals().get('miembros_lista', {})
+    max_jugadores = max_jugadores or MAX_JUGADORES
 
     # Crear los embeds
-    miembros_principales = list(miembros_lista.items())[:MAX_JUGADORES]
-    miembros_reservas = list(miembros_lista.items())[MAX_JUGADORES:]
+    miembros_principales = list(miembros_lista.items())[:max_jugadores]
+    miembros_reservas = list(miembros_lista.items())[max_jugadores:]
     
     embed_main = discord.Embed(title="📋 Lista de Jugadores", color=discord.Color.blue())
-    embed_reservas = discord.Embed(title="📝 Reservas", color=discord.Color.orange())
+    embed_reservas = discord.Embed(title="📝 Reservas", color=discord.Color.orange()) if miembros_reservas else None
     
-    for embed, miembros in [(embed_main, miembros_principales), (embed_reservas, miembros_reservas)]:
-        if not miembros:
-            continue
-        
+    # Procesar jugadores principales
+    if miembros_principales:
         numeros, nombres, estados = [], [], []
-        for index, (miembro, estado) in enumerate(miembros, 1):
+        for index, (miembro, estado) in enumerate(miembros_principales, 1):
             numeros.append(str(index))
             nombres.append(miembro)
-            estados.append(f"{'🟢' if estado == 'sí' else '🔴'} {'Conectado' if estado == 'sí' else 'Desconectado'}")
+            is_connected = estado == "si"
+            estados.append(f"{'🟢' if is_connected else '🔴'} {'Conectado' if is_connected else 'Desconectado'}")
         
-        embed.add_field(name="#️⃣ Nº", value="\n".join(numeros) or "N/A", inline=True)
-        embed.add_field(name="👤 Nombre", value="\n".join(nombres) or "N/A", inline=True)
-        embed.add_field(name="🔹 Estado", value="\n".join(estados) or "N/A", inline=True)
+        embed_main.add_field(name="#️⃣ Nº", value="\n".join(numeros) or "N/A", inline=True)
+        embed_main.add_field(name="👤 Nombre", value="\n".join(nombres) or "N/A", inline=True)
+        embed_main.add_field(name="🔹 Estado", value="\n".join(estados) or "N/A", inline=True)
+    
+    # Procesar reservas
+    if miembros_reservas:
+        numeros, nombres, estados = [], [], []
+        for index, (miembro, estado) in enumerate(miembros_reservas, max_jugadores + 1):
+            numeros.append(str(index))
+            nombres.append(miembro)
+            is_connected = estado == "si"
+            estados.append(f"{'🟢' if is_connected else '🔴'} {'Conectado' if is_connected else 'Desconectado'}")
+        
+        embed_reservas.add_field(name="#️⃣ Nº", value="\n".join(numeros) or "N/A", inline=True)
+        embed_reservas.add_field(name="👤 Nombre", value="\n".join(nombres) or "N/A", inline=True)
+        embed_reservas.add_field(name="🔹 Estado", value="\n".join(estados) or "N/A", inline=True)
     
     # Contar jugadores conectados y desconectados
-    total_si = sum(1 for estado in miembros_lista.values() if estado == "sí")
+    total_si = sum(1 for estado in miembros_lista.values() if estado == "si")
     total_no = sum(1 for estado in miembros_lista.values() if estado == "no")
 
-    # Obtener la fecha y hora actual
-    ahora = datetime.now().strftime("%H:%M %d-%m-%Y")
+    # Configurar el pie de pagina
+    if is_historico:
+        try:
+            fecha_formateada = datetime.strptime(fecha_lista, "%Y-%m-%d %H:%M:%S").strftime("%H:%M %d-%m-%Y")
+        except (ValueError, TypeError):
+            fecha_formateada = fecha_lista or "Desconocida"
+        footer_text = f"⛔ Lista Cerrada\n📅 Fecha de la partida: {fecha_formateada}\n🟢 Conectados: {total_si} | 🔴 Desconectados: {total_no}"
+    else:
+        if tiempo_inicio_lista is None:
+            tiempo_restante_texto = "⏳ Tiempo no disponible"
+        else:
+            tiempo_transcurrido = time.time() - tiempo_inicio_lista
+            tiempo_restante = max(0, MAX_TIME_LIST - tiempo_transcurrido)
+            minutos_restantes = int(tiempo_restante) // 60
+            segundos_restantes = int(tiempo_restante) % 60
+            tiempo_restante_texto = f"⏳ La lista se cerrará en {minutos_restantes}m {segundos_restantes}s"
+        fecha_formateada = datetime.now().strftime("%H:%M %d-%m-%Y")
+        footer_text = f"{tiempo_restante_texto}\n📅 Fecha de la partida: {fecha_formateada}\n🟢 Conectados: {total_si} | 🔴 Desconectados: {total_no}"
     
-    # Añadir pie de página con el tiempo restante
-    tiempo_restante_texto = f"⏳ La lista se cerrará en {minutos_restantes}m {segundos_restantes}s"
-    embed_main.set_footer(text=f"{tiempo_restante_texto}\n📅 Fecha de la partida: {ahora}\n🟢 Conectados: {total_si} | 🔴 Desconectados: {total_no}")
+    embed_main.set_footer(text=footer_text)
     
-    return embed_main, embed_reservas if miembros_reservas else None
+    return embed_main, embed_reservas
 
 #################################################################################################
 
@@ -365,7 +392,7 @@ async def add_players(ctx, member=None, modo="manual"):
             return
         miembro = member.display_name
         if miembro not in miembros_lista:  # Evitar duplicados
-            miembros_lista[miembro] = "sí"
+            miembros_lista[miembro] = "si"
             miembros_objetos[miembro] = connected_members[miembro]  # Usar nombre como clave
             print(f"Se ha añadido correctamente el jugador: {miembro}")
 
@@ -400,7 +427,7 @@ async def add_players(ctx, member=None, modo="manual"):
                         await ctx.send(f"⚠️ `{jugador}` ya está en la lista.")
                     else:
                         if jugador in connected_members:
-                            miembros_lista[jugador] = "sí"
+                            miembros_lista[jugador] = "si"
                             miembros_objetos[jugador] = connected_members[jugador]
                             print(f"Se ha añadido correctamente el jugador: {jugador}")
                         else:
@@ -482,6 +509,66 @@ async def FinishList(ctx):
 
 #################################################################################################
 
+@bot.command()
+async def ShowPastLists(ctx):
+    """
+    Muestra todas las listas pasadas almacenadas en la base de datos, ordenadas de mas viejo a mas nuevo.
+    """
+    # Verificar permisos de admin
+    if ROL_ID_ADMINS not in [role.id for role in ctx.author.roles]:
+        await ctx.send("⚠️ No tienes permisos para usar este comando.")
+        return
+
+    # Obtener el canal por defecto
+    channel = bot.get_channel(int(config['channel_default']))
+    if not channel:
+        await ctx.send("⚠️ No se pudo encontrar el canal por defecto.")
+        return
+
+    # Consultar listas, ordenadas de mas viejo a mas nuevo
+    query = "SELECT FechaLista, DatosLista, NumJugadores FROM Listas ORDER BY FechaLista ASC;"
+    listas = sql_fetch(query)
+    
+    if not listas:
+        await ctx.send("📪 No hay listas registradas en la base de datos.")
+        return
+
+    await ctx.send(f"📋 Mostrando {len(listas)} listas pasadas...")
+
+    def fix_json(json_str):
+        """Repara JSON invalido reemplazando comillas simples."""
+        try:
+            json_str = re.sub(r"(?<!\\)'", '"', json_str)
+            return json.loads(json_str)
+        except json.JSONDecodeError as e:
+            logging.error(f"Error al reparar JSON: {json_str}, Error: {str(e)}")
+            raise
+
+    # Procesar cada lista
+    for fecha_lista, datos_lista, num_jugadores in listas:
+        try:
+            miembros_lista = fix_json(datos_lista)
+            embed_main, embed_reservas = generar_embeds(
+                miembros_lista=miembros_lista,
+                max_jugadores=num_jugadores,
+                fecha_lista=fecha_lista,
+                is_historico=True
+            )
+            await channel.send(embed=embed_main)
+            if embed_reservas:
+                await channel.send(embed=embed_reservas)
+            await asyncio.sleep(1)
+        except json.JSONDecodeError:
+            await channel.send(f"⚠️ Error al procesar la lista del {fecha_lista}: Datos inválidos.")
+            logging.error(f"JSON inválido en lista {fecha_lista}: {datos_lista}")
+            continue
+        except Exception as e:
+            await channel.send(f"⚠️ Error al mostrar la lista del {fecha_lista}: {str(e)}")
+            logging.error(f"Error inesperado en lista {fecha_lista}: {str(e)}")
+            continue
+
+#################################################################################################
+
 async def cerrar_lista(tiempo_espera):
     global lista_cerrada, tarea_cerrar_lista
     
@@ -519,7 +606,7 @@ async def proceso_cierre_lista(tiempo_espera):
     embed_main, embed_reservas = generar_embeds()
     
     if embed_main:
-        embed_main.set_footer(text=f"⛔ Lista Cerrada\n{embed_main.footer.text.split('\n')[1]}\n🟢 Conectados: {sum(1 for estado in miembros_lista.values() if estado == 'sí')} | 🔴 Desconectados: {sum(1 for estado in miembros_lista.values() if estado == 'no')}")
+        embed_main.set_footer(text=f"⛔ Lista Cerrada\n{embed_main.footer.text.split('\n')[1]}\n🟢 Conectados: {sum(1 for estado in miembros_lista.values() if estado == 'si')} | 🔴 Desconectados: {sum(1 for estado in miembros_lista.values() if estado == 'no')}")
         if embed_main_message:
             await embed_main_message.edit(embed=embed_main)
         else:
@@ -541,12 +628,16 @@ async def proceso_cierre_lista(tiempo_espera):
 #################################################################################################
 
 async def insert_lista(embed_main_message, embed_reservas_message):
+    """
+    Inserta una lista en la base de datos con estados 'si'/'no' y nombres sin escapar.
+    """
     global miembros_lista, MAX_JUGADORES
 
     embed_main_message_id = embed_main_message.id if embed_main_message else 0
     embed_reservas_message_id = embed_reservas_message.id if embed_reservas_message else 0
     fecha_lista = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    datos_lista = json.dumps(miembros_lista)
+    normalized_miembros_lista = {k: "si" if v == "sí" else "no" if v == "no" else v for k, v in miembros_lista.items()}
+    datos_lista = json.dumps(normalized_miembros_lista, ensure_ascii=False)
 
     query = '''
     INSERT INTO Listas (FechaLista, DatosLista, NumJugadores, EmbedID, EmbedReservasID)
@@ -579,9 +670,9 @@ async def actualizar_jugadores_db():
 
         if existing_player:
             partidas_inscrito = existing_player[0][3] + 1
-            partidas_conectado = existing_player[0][4] + 1 if estado == "sí" else existing_player[0][4]
+            partidas_conectado = existing_player[0][4] + 1 if estado == "si" else existing_player[0][4]
             partidas_desconectado = existing_player[0][5] + 1 if estado == "no" else existing_player[0][5]
-            ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "sí" else (existing_player[0][8] if existing_player[0][8] else "Nunca ha jugado")
+            ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "si" else (existing_player[0][8] if existing_player[0][8] else "Nunca ha jugado")
             query_update = '''
                 UPDATE Jugadores
                 SET PartidasInscrito = ?,
@@ -593,9 +684,9 @@ async def actualizar_jugadores_db():
             sql_update(query_update, (partidas_inscrito, partidas_conectado, partidas_desconectado, ultima_partida, member_obj.id))
         else:
             partidas_inscrito = 1
-            partidas_conectado = 1 if estado == "sí" else 0
+            partidas_conectado = 1 if estado == "si" else 0
             partidas_desconectado = 1 if estado == "no" else 0
-            ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "sí" else "Nunca ha jugado"
+            ultima_partida = datetime.now().strftime("%d-%m-%Y") if estado == "si" else "Nunca ha jugado"
             query_update = '''
                 INSERT INTO Jugadores (IdDiscord, UserDiscord, Apodo, PartidasInscrito, PartidasConectado, PartidasDesconectado, UltimaPartida)
                 VALUES (?, ?, ?, ?, ?, ?, ?);
@@ -625,6 +716,8 @@ async def actualizar_jugadores_db():
 
 @bot.command()
 async def UpdateStatsPlayers(ctx):
+    global THREAD_STATS_NAME
+
     query_total_partidas = "SELECT seq FROM sqlite_sequence WHERE name='Listas';"
     total_partidas = sql_fetch(query_total_partidas)
     total_partidas = total_partidas[0][0] if total_partidas else 0
@@ -648,10 +741,10 @@ async def UpdateStatsPlayers(ctx):
             else:
                 return "🔵" if percentage <= 10 else "🟢" if percentage <= 39 else "🟡" if percentage <= 59 else "🟠" if percentage <= 79 else "🔴"
 
-        # Buscar si ya existe un hilo con el nombre "Estadísticas jugadores"
+        # Buscar si ya existe un hilo con el nombre
         thread = None
         for t in channel.threads:
-            if t.name == "Estadísticas jugadores":
+            if t.name == THREAD_STATS_NAME:
                 thread = t
                 break
         
@@ -660,13 +753,13 @@ async def UpdateStatsPlayers(ctx):
             await thread.delete()
         
         # Crear un nuevo hilo público visible para los miembros del canal
-        thread = await channel.create_thread(name="Estadísticas jugadores", type=discord.ChannelType.public_thread)
+        thread = await channel.create_thread(name=THREAD_STATS_NAME, type=discord.ChannelType.public_thread)
 
         
         for i in range(0, len(jugadores), 5):
             group = jugadores[i:i+5]
             
-            message = f"📋 **Estadísticas de Jugadores - Partidas totales jugadas: {total_partidas}**\n\n"
+            message = f"📋 **Partidas totales jugadas: {total_partidas}**\n\n"
             message += f"{'Apodo':<{widths[0]}} | {'Part. Inscritas':>{widths[1]}} | {'Part. Conectado':>{widths[2]}} | {'Part. Desconectado':>{widths[3]}} | {'% Inscr.':>{widths[4]}} | {'% Aus.':>{widths[5]}} | {'Última Partida':>{widths[6]}}\n"
             message += "─" * (sum(widths) + 6*3) + "\n"
 
@@ -778,8 +871,8 @@ async def on_voice_state_update(member, before, after):
     # Caso 2: Actualizar estado de miembros en la lista
     if member.display_name in miembros_lista:
         if before.channel is None and after.channel is not None:
-            miembros_lista[member.display_name] = "sí"
-            print(f"{member.display_name} se ha conectado. Estado actualizado a 'sí'.")
+            miembros_lista[member.display_name] = "si"
+            print(f"{member.display_name} se ha conectado. Estado actualizado a 'si'.")
         elif before.channel is not None and after.channel is None:
             miembros_lista[member.display_name] = "no"
             print(f"{member.display_name} se ha desconectado. Estado actualizado a 'no'.")
@@ -810,7 +903,7 @@ async def comprobar_conectados_periodicamente():
         # Actualizar la lista de miembros conectados
         for miembro in miembros_lista:
             if miembro in connected_members:
-                miembros_lista[miembro] = "sí"
+                miembros_lista[miembro] = "si"
             else:
                 miembros_lista[miembro] = "no"
             #print(miembros_lista)  # Se imprime cada vez que se modifica la lista
