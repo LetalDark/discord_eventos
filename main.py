@@ -669,7 +669,8 @@ async def actualizar_jugadores_db():
             continue
 
         user_discord = member_obj.name
-        apodo = member_obj.global_name
+        # Usar global_name si está disponible, de lo contrario usar name
+        apodo = member_obj.global_name if member_obj.global_name else member_obj.name
 
         query = "SELECT * FROM Jugadores WHERE IdDiscord = ?;"
         existing_player = sql_fetch(query, (member_obj.id,))
@@ -761,7 +762,6 @@ async def UpdateStatsPlayers(ctx):
         # Crear un nuevo hilo público visible para los miembros del canal
         thread = await channel.create_thread(name=THREAD_STATS_NAME, type=discord.ChannelType.public_thread)
 
-        
         for i in range(0, len(jugadores), 5):
             group = jugadores[i:i+5]
             
@@ -771,10 +771,12 @@ async def UpdateStatsPlayers(ctx):
 
             for user in group:
                 apodo, inscritos, conectados, desconectados, porcentaje_inscrito, porcentaje_ausencias, ultima_partida = user
+                # Manejar caso donde apodo es None
+                display_name = apodo if apodo is not None else "Sin apodo"
                 color_inscripcion = get_color_from_percentage(porcentaje_inscrito, is_inscription=True)
                 color_ausencias = get_color_from_percentage(porcentaje_ausencias, is_inscription=False)
 
-                line = (f"{apodo:<{widths[0]}} | {inscritos:>{widths[1]}} | {conectados:>{widths[2]}} | "
+                line = (f"{display_name:<{widths[0]}} | {inscritos:>{widths[1]}} | {conectados:>{widths[2]}} | "
                         f"{desconectados:>{widths[3]}} | {color_inscripcion} {porcentaje_inscrito:>{widths[4]}.2f}% | "
                         f"{color_ausencias} {porcentaje_ausencias:>{widths[5]}.2f}% | "
                         f"{ultima_partida if ultima_partida else 'No disponible':>{widths[6]}}")
