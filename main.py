@@ -238,8 +238,20 @@ async def actualizar_embeds(channel_or_ctx):
         channel = channel_or_ctx
     elif isinstance(channel_or_ctx, discord.Thread):
         channel = channel_or_ctx.parent  # Obtener el canal padre del hilo
+    elif isinstance(channel_or_ctx, commands.Context):
+        channel = channel_or_ctx.channel  # Para contextos de comandos
+    elif isinstance(channel_or_ctx, discord.ForumChannel):
+        # Opcional: Si el canal es un foro, intentar usar un hilo predeterminado
+        # Aquí asumimos que quieres usar un hilo específico; ajusta según tu caso
+        threads = channel_or_ctx.threads
+        if threads:
+            channel = threads[0]  # Usar el primer hilo del foro (ajusta según tu lógica)
+        else:
+            print("Error: No se encontraron hilos en el ForumChannel.")
+            return
     else:
-        channel = channel_or_ctx.channel  # Para contextos de comandos (commands.Context)
+        print(f"Error: Tipo de canal no soportado: {type(channel_or_ctx)}")
+        channel = bot.get_channel(int(config['channel_default']))
     
     embed_main, embed_reservas = generar_embeds()
     
@@ -386,8 +398,21 @@ async def enviar_mensajes_privados(ctx):
 async def add_players(ctx, member=None, modo="manual"):
     global miembros_lista, miembros_objetos
 
-    # Determinar si ctx es un canal o un contexto de comando
-    channel = ctx if isinstance(ctx, discord.TextChannel) else ctx.channel if ctx else bot.get_channel(int(config['channel_default']))
+    # Determinar si ctx es un canal, un hilo o un contexto de comando
+    try:
+        if isinstance(ctx, discord.TextChannel):
+            channel = ctx
+        elif isinstance(ctx, discord.Thread):
+            channel = ctx.parent  # Usar el canal padre del hilo
+        elif isinstance(ctx, commands.Context):
+            channel = ctx.channel
+        else:
+            channel = bot.get_channel(int(config['channel_default']))
+    except Exception as e:
+        print(f"Error al determinar el canal: {e}")
+        return
+
+    print(f"Tipo de ctx: {type(ctx)}, Canal: {channel}")  # Depuración
 
     # Obtener los miembros conectados a los canales de voz en ese momento
     connected_members = {m.display_name: m for guild in bot.guilds for channel in guild.voice_channels for m in channel.members}
@@ -872,8 +897,10 @@ async def on_voice_state_update(member, before, after):
             if member.display_name not in adding_players:
                 adding_players.add(member.display_name)
                 modo = "automatico"
-                ctx = bot.get_channel(int(config['channel_default']))
-                await add_players(ctx, member, modo)
+                # Obtener el canal predeterminado
+                channel = bot.get_channel(int(config['channel_default']))
+                print(f"Añadiendo automáticamente a {member.display_name} desde canal de reservas")  # Depuración
+                await add_players(channel, member, modo)
                 adding_players.remove(member.display_name)
 
     # Caso 2: Actualizar estado de miembros en la lista
@@ -890,7 +917,9 @@ async def on_voice_state_update(member, before, after):
             async with embed_update_lock:
                 tiempo_actual = time.time()
                 if tiempo_actual - ultima_actualizacion_embed >= 2:  # 2 segundos de intervalo mínimo
-                    await actualizar_embeds(bot.get_channel(int(config['channel_default'])))
+                    channel = bot.get_channel(int(config['channel_default']))
+                    print(f"Actualizando embeds para {member.display_name}")  # Depuración
+                    await actualizar_embeds(channel)
                     ultima_actualizacion_embed = tiempo_actual
 
 #################################################################################################
